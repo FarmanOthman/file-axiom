@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { findFiles, renameFile } from './fileOperations';
+import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo } from './fileOperations';
 import { parseIntent } from './intentParser';
 import { FileAxiomError } from './types';
 
@@ -64,6 +64,21 @@ const chatHandler: vscode.ChatRequestHandler = async (
     if (request.command === 'rename') {
       return await handleRename(request.prompt, stream);
     }
+    if (request.command === 'list') {
+      return await handleList(request.prompt, stream);
+    }
+    if (request.command === 'duplicate') {
+      return await handleDuplicate(request.prompt, stream);
+    }
+    if (request.command === 'move') {
+      return await handleMove(request.prompt, stream);
+    }
+    if (request.command === 'delete') {
+      return await handleDelete(request.prompt, stream);
+    }
+    if (request.command === 'info') {
+      return await handleInfo(request.prompt, stream);
+    }
 
     // No slash command — use LLM intent extraction
     stream.progress('Analyzing your request…');
@@ -77,6 +92,27 @@ const chatHandler: vscode.ChatRequestHandler = async (
         `${intent.source} to ${intent.target}`,
         stream,
       );
+    }
+    if (intent.operation === 'list' && intent.path) {
+      return await handleList(intent.path, stream);
+    }
+    if (intent.operation === 'duplicate' && intent.source && intent.target) {
+      return await handleDuplicate(
+        `${intent.source} to ${intent.target}`,
+        stream,
+      );
+    }
+    if (intent.operation === 'move' && intent.source && intent.target) {
+      return await handleMove(
+        `${intent.source} to ${intent.target}`,
+        stream,
+      );
+    }
+    if (intent.operation === 'delete' && intent.path) {
+      return await handleDelete(intent.path, stream);
+    }
+    if (intent.operation === 'info' && intent.path) {
+      return await handleInfo(intent.path, stream);
     }
 
     stream.markdown(usageHelp());
@@ -146,6 +182,139 @@ async function handleRename(
   stream.anchor(result.newUri, vscode.workspace.asRelativePath(result.newUri));
 
   return { metadata: { command: 'rename' } };
+}
+
+// ── /list Handler ────────────────────────────────────────────
+
+async function handleList(
+  dirPath: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  stream.progress(`Listing directory: ${dirPath}…`);
+
+  const entries = await listDirectory(dirPath.trim());
+
+  if (entries.length === 0) {
+    stream.markdown(`Directory \`${dirPath}\` is empty.`);
+    return { metadata: { command: 'list' } };
+  }
+
+  stream.markdown(
+    `**Directory \`${dirPath}\`** (${entries.length} item(s)):\n\n`,
+  );
+
+  for (const entry of entries) {
+    const icon = entry.type === 'Directory' ? '📁' : '📄';
+    stream.markdown(`${icon} `);
+    stream.anchor(entry.uri, entry.name);
+    stream.markdown('\n');
+  }
+
+  return { metadata: { command: 'list' } };
+}
+
+// ── /duplicate Handler ───────────────────────────────────────
+
+async function handleDuplicate(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  const parts = prompt.split(/\s+to\s+/i);
+
+  if (parts.length < 2 || !parts[0].trim() || !parts[1].trim()) {
+    stream.markdown(
+      '**Usage:** `/duplicate source.ts to copy.ts`\n\n' +
+        'Separate the source and target filenames with `to`.',
+    );
+    return { metadata: { command: 'duplicate' } };
+  }
+
+  const source = parts[0].trim();
+  const target = parts[1].trim();
+
+  stream.progress(`Duplicating ${source} → ${target}…`);
+
+  const result = await duplicateFile(source, target);
+
+  stream.markdown(`**Duplicated** \`${source}\` → \`${target}\`\n\n`);
+  stream.anchor(result.targetUri, vscode.workspace.asRelativePath(result.targetUri));
+
+  return { metadata: { command: 'duplicate' } };
+}
+
+// ── /move Handler ────────────────────────────────────────────
+
+async function handleMove(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  const parts = prompt.split(/\s+to\s+/i);
+
+  if (parts.length < 2 || !parts[0].trim() || !parts[1].trim()) {
+    stream.markdown(
+      '**Usage:** `/move file.ts to folder/file.ts`\n\n' +
+        'Separate the source and target paths with `to`.',
+    );
+    return { metadata: { command: 'move' } };
+  }
+
+  const source = parts[0].trim();
+  const target = parts[1].trim();
+
+  stream.progress(`Moving ${source} → ${target}…`);
+
+  const result = await moveFile(source, target);
+
+  const refs =
+    result.referencesUpdated > 0
+      ? ` Updated **${result.referencesUpdated}** import reference(s).`
+      : '';
+
+  stream.markdown(`**Moved** \`${source}\` → \`${target}\`.${refs}\n\n`);
+  stream.anchor(result.newUri, vscode.workspace.asRelativePath(result.newUri));
+
+  return { metadata: { command: 'move' } };
+}
+
+// ── /delete Handler ──────────────────────────────────────────
+
+async function handleDelete(
+  filePath: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  stream.progress(`Deleting ${filePath}…`);
+
+  const result = await deleteFile(filePath.trim());
+
+  stream.markdown(
+    `**Deleted** \`${filePath}\` (moved to trash)\n\n` +
+      'The file can be recovered from your system trash.',
+  );
+
+  return { metadata: { command: 'delete' } };
+}
+
+// ── /info Handler ────────────────────────────────────────────
+
+async function handleInfo(
+  filePath: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  stream.progress(`Getting info for ${filePath}…`);
+
+  const info = await getFileInfo(filePath.trim());
+
+  stream.markdown(`**File Info:** \`${filePath}\`\n\n`);
+  stream.markdown(`- **Type:** ${info.type}\n`);
+  stream.markdown(`- **Size:** ${formatBytes(info.size)}\n`);
+  if (info.lines !== undefined) {
+    stream.markdown(`- **Lines:** ${info.lines}\n`);
+  }
+  stream.markdown(`- **Created:** ${info.created}\n`);
+  stream.markdown(`- **Modified:** ${info.modified}\n\n`);
+  stream.anchor(info.uri, 'Open file');
+
+  return { metadata: { command: 'info' } };
 }
 
 // ── Command Palette: Find Files ──────────────────────────────
@@ -263,9 +432,24 @@ function usageHelp(): string {
     '| Command | Example |',
     '|---------|---------|',
     '| `/find` | `@axiom /find **/*.ts` |',
-    '| `/rename` | `@axiom /rename UserSvc.ts to MemberService.ts` |',
-    '| *Natural language* | `@axiom rename Auth.js to Security.js` |',
+    '| `/rename` | `@axiom /rename old.ts to new.ts` |',
+    '| `/list` | `@axiom /list src` |',
+    '| `/duplicate` | `@axiom /duplicate file.ts to copy.ts` |',
+    '| `/move` | `@axiom /move file.ts to folder/file.ts` |',
+    '| `/delete` | `@axiom /delete old-file.ts` |',
+    '| `/info` | `@axiom /info package.json` |',
+    '| *Natural language* | `@axiom show me files in src folder` |',
     '',
-    'All renames are atomic — imports are updated silently via the Language Server.',
+    'All rename/move operations are atomic — imports updated silently.',
   ].join('\n');
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) { return '0 Bytes'; }
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }

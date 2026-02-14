@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FileAxiomError, RenameResult } from './types';
+import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo } from './types';
 
 // ── Find Files ───────────────────────────────────────────────
 
@@ -162,6 +162,248 @@ export async function renameFile(
   }
 
   return { oldUri, newUri, referencesUpdated };
+}
+
+// ── List Directory ───────────────────────────────────────────
+
+/**
+ * Lists all files and folders within the specified directory.
+ * Returns an array of DirectoryEntry objects with names and types.
+ */
+export async function listDirectory(dirPath: string): Promise<DirectoryEntry[]> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot list directories in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const dirUri = vscode.Uri.joinPath(root, dirPath);
+
+  // Verify directory exists
+  let stat;
+  try {
+    stat = await vscode.workspace.fs.stat(dirUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `Directory not found: ${dirPath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  // Verify it's a directory
+  if (stat.type !== vscode.FileType.Directory) {
+    throw new FileAxiomError(
+      `Path is not a directory: ${dirPath}`,
+      'INVALID_INPUT',
+    );
+  }
+
+  const entries = await vscode.workspace.fs.readDirectory(dirUri);
+
+  return entries
+    .map(([name, type]) => ({
+      name,
+      type: type === vscode.FileType.Directory ? 'Directory' as const : 'File' as const,
+      uri: vscode.Uri.joinPath(dirUri, name),
+    }))
+    .sort((a, b) => {
+      // Directories first, then alphabetically
+      if (a.type !== b.type) {
+        return a.type === 'Directory' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+}
+
+// ── Duplicate File/Folder ────────────────────────────────────
+
+/**
+ * Safely duplicates a file or folder to a new location.
+ * Throws an error if the target already exists (no overwrite).
+ */
+export async function duplicateFile(
+  sourcePath: string,
+  targetPath: string,
+): Promise<{ sourceUri: vscode.Uri; targetUri: vscode.Uri }> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot duplicate files in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const sourceUri = vscode.Uri.joinPath(root, sourcePath);
+  const targetUri = vscode.Uri.joinPath(root, targetPath);
+
+  // Verify source exists
+  try {
+    await vscode.workspace.fs.stat(sourceUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `Source file not found: ${sourcePath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  // Verify target does NOT exist
+  try {
+    await vscode.workspace.fs.stat(targetUri);
+    throw new FileAxiomError(
+      `Target already exists: ${targetPath}. Aborting to prevent overwrite.`,
+      'ALREADY_EXISTS',
+    );
+  } catch (err: unknown) {
+    if (err instanceof FileAxiomError) {
+      throw err;
+    }
+    if (!isFileSystemError(err, 'FileNotFound')) {
+      throw err;
+    }
+  }
+
+  // Copy the file/directory
+  await vscode.workspace.fs.copy(sourceUri, targetUri, { overwrite: false });
+
+  return { sourceUri, targetUri };
+}
+
+// ── Move File/Folder ─────────────────────────────────────────
+
+/**
+ * Moves a file to a new location with import updates (same as rename
+ * but semantically different when moving between directories).
+ */
+export async function moveFile(
+  sourcePath: string,
+  targetPath: string,
+): Promise<RenameResult> {
+  // Move is semantically the same as rename in VS Code
+  return await renameFile(sourcePath, targetPath);
+}
+
+// ── Delete File/Folder (Trash) ───────────────────────────────
+
+/**
+ * Safely deletes a file or folder by moving it to the system trash.
+ * Prevents permanent data loss by using useTrash: true.
+ */
+export async function deleteFile(
+  filePath: string,
+): Promise<{ deletedUri: vscode.Uri }> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot delete files in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const fileUri = vscode.Uri.joinPath(root, filePath);
+
+  // Verify file exists
+  try {
+    await vscode.workspace.fs.stat(fileUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `File not found: ${filePath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  // Delete to trash (safe, recoverable)
+  await vscode.workspace.fs.delete(fileUri, { recursive: true, useTrash: true });
+
+  return { deletedUri: fileUri };
+}
+
+// ── File Info/Metadata ───────────────────────────────────────
+
+/**
+ * Retrieves metadata for a file including size, dates, and line count
+ * (for text files).
+ */
+export async function getFileInfo(filePath: string): Promise<FileInfo> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const fileUri = vscode.Uri.joinPath(root, filePath);
+
+  // Get file stats
+  let stat;
+  try {
+    stat = await vscode.workspace.fs.stat(fileUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `File not found: ${filePath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  const info: FileInfo = {
+    uri: fileUri,
+    size: stat.size,
+    created: new Date(stat.ctime).toLocaleString(),
+    modified: new Date(stat.mtime).toLocaleString(),
+    type: stat.type === vscode.FileType.Directory ? 'Directory' : 'File',
+  };
+
+  // For text files, count lines
+  if (stat.type === vscode.FileType.File) {
+    try {
+      const document = await vscode.workspace.openTextDocument(fileUri);
+      info.lines = document.lineCount;
+    } catch {
+      // Not a text file or can't be opened — skip line count
+      info.lines = undefined;
+    }
+  }
+
+  return info;
 }
 
 // ── Helpers ──────────────────────────────────────────────────

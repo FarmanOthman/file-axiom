@@ -16,15 +16,21 @@ Given a user request, output ONLY a JSON object — no markdown, no explanation.
 
 Schema:
 {
-  "operation": "find" | "rename",
+  "operation": "find" | "rename" | "list" | "duplicate" | "move" | "delete" | "info",
   "pattern": "<glob pattern, only for find>",
-  "source": "<current filename, only for rename>",
-  "target": "<new filename, only for rename>"
+  "source": "<current filename, for rename/duplicate/move>",
+  "target": "<new filename, for rename/duplicate/move>",
+  "path": "<file or directory path, for list/delete/info>"
 }
 
 Rules:
-- If the user wants to search/find/list/locate files → operation = "find".
-- If the user wants to rename/move/change the name → operation = "rename".
+- find: search/find/locate files by pattern
+- rename: rename a file (same directory)
+- list: show directory contents / list files in folder
+- duplicate: copy a file to new location
+- move: move file to different directory
+- delete: remove/delete a file (safely to trash)
+- info: get metadata (size, dates, lines) for a file
 - Paths should be relative to the workspace root.
 - Output ONLY the JSON object. No other text.`;
 
@@ -39,15 +45,25 @@ Rules:
     vscode.LanguageModelChatMessage.Assistant(
       '{"operation":"rename","source":"UserSvc.ts","target":"MemberService.ts"}',
     ),
-    vscode.LanguageModelChatMessage.User('Change Auth.js to Security.js'),
+    vscode.LanguageModelChatMessage.User('show me what files are in src folder'),
     vscode.LanguageModelChatMessage.Assistant(
-      '{"operation":"rename","source":"Auth.js","target":"Security.js"}',
+      '{"operation":"list","path":"src"}',
     ),
-    vscode.LanguageModelChatMessage.User(
-      'look for config files in the src directory',
-    ),
+    vscode.LanguageModelChatMessage.User('duplicate config.json to config.backup.json'),
     vscode.LanguageModelChatMessage.Assistant(
-      '{"operation":"find","pattern":"src/**/config.*"}',
+      '{"operation":"duplicate","source":"config.json","target":"config.backup.json"}',
+    ),
+    vscode.LanguageModelChatMessage.User('move utils.ts to src/helpers/utils.ts'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"move","source":"utils.ts","target":"src/helpers/utils.ts"}',
+    ),
+    vscode.LanguageModelChatMessage.User('delete old-test.js'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"delete","path":"old-test.js"}',
+    ),
+    vscode.LanguageModelChatMessage.User('get info about package.json'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"info","path":"package.json"}',
     ),
   ];
 
@@ -79,14 +95,18 @@ Rules:
     const parsed = JSON.parse(fullText) as FileAxiomIntent;
 
     // Validate required fields
-    if (!parsed.operation || !['find', 'rename'].includes(parsed.operation)) {
+    const validOps = ['find', 'rename', 'list', 'duplicate', 'move', 'delete', 'info'];
+    if (!parsed.operation || !validOps.includes(parsed.operation)) {
       throw new Error('Invalid operation');
     }
     if (parsed.operation === 'find' && !parsed.pattern) {
       throw new Error('Missing pattern for find operation');
     }
-    if (parsed.operation === 'rename' && (!parsed.source || !parsed.target)) {
-      throw new Error('Missing source or target for rename operation');
+    if (['rename', 'duplicate', 'move'].includes(parsed.operation) && (!parsed.source || !parsed.target)) {
+      throw new Error('Missing source or target');
+    }
+    if (['list', 'delete', 'info'].includes(parsed.operation) && !parsed.path) {
+      throw new Error('Missing path');
     }
 
     return parsed;
@@ -99,9 +119,41 @@ Rules:
 // ── Regex Fallback ────────────────────────────────────────────
 
 function regexFallback(prompt: string): FileAxiomIntent {
-  // Detect rename: "rename X to Y", "move X to Y", "change X to Y"
+  const lower = prompt.toLowerCase().trim();
+
+  // Detect list: "list X", "show X", "ls X", "what's in X"
+  const listMatch = prompt.match(
+    /(?:list|show|ls|what'?s?\s+in)\s+(?:files?\s+in\s+)?(.+)/i,
+  );
+  if (listMatch) {
+    return { operation: 'list', path: listMatch[1].trim() };
+  }
+
+  // Detect duplicate: "duplicate X to Y", "copy X to Y"
+  const duplicateMatch = prompt.match(
+    /(?:duplicate|copy)\s+(\S+)\s+to\s+(\S+)/i,
+  );
+  if (duplicateMatch) {
+    return {
+      operation: 'duplicate',
+      source: duplicateMatch[1],
+      target: duplicateMatch[2],
+    };
+  }
+
+  // Detect move: "move X to Y"
+  const moveMatch = prompt.match(/move\s+(\S+)\s+to\s+(\S+)/i);
+  if (moveMatch) {
+    return {
+      operation: 'move',
+      source: moveMatch[1],
+      target: moveMatch[2],
+    };
+  }
+
+  // Detect rename: "rename X to Y", "change X to Y"
   const renameMatch = prompt.match(
-    /(?:rename|move|change)\s+(\S+)\s+to\s+(\S+)/i,
+    /(?:rename|change)\s+(\S+)\s+to\s+(\S+)/i,
   );
   if (renameMatch) {
     return {
@@ -111,9 +163,23 @@ function regexFallback(prompt: string): FileAxiomIntent {
     };
   }
 
-  // Detect find: "find X", "search for X", "list X", "locate X"
+  // Detect delete: "delete X", "remove X", "trash X"
+  const deleteMatch = prompt.match(/(?:delete|remove|trash)\s+(.+)/i);
+  if (deleteMatch) {
+    return { operation: 'delete', path: deleteMatch[1].trim() };
+  }
+
+  // Detect info: "info about X", "get info on X", "metadata for X"
+  const infoMatch = prompt.match(
+    /(?:info|metadata|details?)(?:\s+(?:about|on|for))?\s+(.+)/i,
+  );
+  if (infoMatch) {
+    return { operation: 'info', path: infoMatch[1].trim() };
+  }
+
+  // Detect find: "find X", "search for X", "locate X"
   const findMatch = prompt.match(
-    /(?:find|search|list|locate|look\s+for)\s+(.+)/i,
+    /(?:find|search|locate|look\s+for)\s+(.+)/i,
   );
   if (findMatch) {
     let pattern = findMatch[1].trim();

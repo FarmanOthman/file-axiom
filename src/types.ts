@@ -24,20 +24,37 @@ export class FileAxiomError extends Error {
 // ── Intent Parser Types ──────────────────────────────────────
 
 export interface FileAxiomIntent {
-  operation: 'find' | 'rename';
+  operation: 'find' | 'rename' | 'list' | 'duplicate' | 'move' | 'delete' | 'info';
   /** Glob pattern for find operations */
   pattern?: string;
-  /** Source file path for rename operations */
+  /** Source file path for rename/duplicate/move operations */
   source?: string;
-  /** Target file path for rename operations */
+  /** Target file path for rename/duplicate/move operations */
   target?: string;
+  /** Directory path for list operations */
+  path?: string;
 }
 
-// ── Rename Result ────────────────────────────────────────────
+// ── Operation Results ────────────────────────────────────────
 
 export interface RenameResult {
   oldUri: vscode.Uri;
   newUri: vscode.Uri;
   /** Number of import references updated across the workspace */
   referencesUpdated: number;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  type: 'File' | 'Directory';
+  uri: vscode.Uri;
+}
+
+export interface FileInfo {
+  uri: vscode.Uri;
+  size: number;
+  created: string;
+  modified: string;
+  type: 'File' | 'Directory';
+  lines?: number; // Only for text files
 }

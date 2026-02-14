@@ -25,11 +25,31 @@
         "commands": [
           {
             "name": "find",
-            "description": "Find files with Ripgrep"
+            "description": "Find files matching a glob pattern"
           },
           {
             "name": "rename",
-            "description": "Atomic rename with silent import updates"
+            "description": "Rename a file and update all imports/references"
+          },
+          {
+            "name": "list",
+            "description": "List all files inside a specific folder"
+          },
+          {
+            "name": "duplicate",
+            "description": "Copy a file or folder to a new location"
+          },
+          {
+            "name": "move",
+            "description": "Move a file to a different directory with import updates"
+          },
+          {
+            "name": "delete",
+            "description": "Delete a file safely (moves to system trash)"
+          },
+          {
+            "name": "info",
+            "description": "Get technical metadata (size, dates, lines) for a file"
           }
         ]
       }
