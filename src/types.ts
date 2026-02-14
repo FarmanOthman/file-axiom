@@ -24,15 +24,21 @@ export class FileAxiomError extends Error {
 // ── Intent Parser Types ──────────────────────────────────────
 
 export interface FileAxiomIntent {
-  operation: 'find' | 'rename' | 'list' | 'duplicate' | 'move' | 'delete' | 'info';
+  operation: 'find' | 'rename' | 'list' | 'duplicate' | 'move' | 'delete' | 'info' | 'findText' | 'chmod';
   /** Glob pattern for find operations */
   pattern?: string;
+  /** Search query for findText operations */
+  query?: string;
+  /** File pattern to search within (for findText) */
+  includePattern?: string;
   /** Source file path for rename/duplicate/move operations */
   source?: string;
   /** Target file path for rename/duplicate/move operations */
   target?: string;
   /** Directory path for list operations */
   path?: string;
+  /** Permissions mode for chmod operations (e.g., "755", "644") */
+  mode?: string;
 }
 
 // ── Operation Results ────────────────────────────────────────
@@ -57,6 +63,30 @@ export interface FileInfo {
   modified: string;
   type: 'File' | 'Directory';
   lines?: number; // Only for text files
+}
+
+export interface TextMatch {
+  uri: vscode.Uri;
+  line: number;
+  column: number;
+  text: string;
+  preview: string;
+}
+
+export interface FindTextResult {
+  query: string;
+  totalMatches: number;
+  files: Array<{
+    uri: vscode.Uri;
+    matches: TextMatch[];
+  }>;
+}
+
+export interface ChmodResult {
+  uri: vscode.Uri;
+  oldMode: string;
+  newMode: string;
+  success: boolean;
 }
 
 // ── Bulk Operations ──────────────────────────────────────────

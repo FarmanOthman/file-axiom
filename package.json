@@ -52,6 +52,18 @@
             "description": "Get technical metadata (size, dates, lines) for a file"
           },
           {
+            "name": "findText",
+            "description": "Search for text content within files (grep)"
+          },
+          {
+            "name": "grep",
+            "description": "Alias for findText - search for text content within files"
+          },
+          {
+            "name": "chmod",
+            "description": "Change file permissions (Unix/macOS)"
+          },
+          {
             "name": "bulk",
             "description": "Perform multiple file operations atomically (rename all, delete multiple, etc.)"
           }

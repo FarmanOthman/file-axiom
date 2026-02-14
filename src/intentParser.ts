@@ -16,21 +16,26 @@ Given a user request, output ONLY a JSON object — no markdown, no explanation.
 
 Schema:
 {
-  "operation": "find" | "rename" | "list" | "duplicate" | "move" | "delete" | "info",
+  "operation": "find" | "rename" | "list" | "duplicate" | "move" | "delete" | "info" | "findText" | "chmod",
   "pattern": "<glob pattern, only for find>",
+  "query": "<search text, only for findText>",
+  "includePattern": "<file pattern to search within, optional for findText>",
   "source": "<current filename, for rename/duplicate/move>",
   "target": "<new filename, for rename/duplicate/move>",
-  "path": "<file or directory path, for list/delete/info>"
+  "path": "<file or directory path, for list/delete/info/chmod>",
+  "mode": "<permission mode like 755 or 644, only for chmod>"
 }
 
 Rules:
 - find: search/find/locate files by pattern
+- findText: search for text content within files (grep)
 - rename: rename a file (same directory)
 - list: show directory contents / list files in folder
 - duplicate: copy a file to new location
 - move: move file to different directory
 - delete: remove/delete a file (safely to trash)
 - info: get metadata (size, dates, lines) for a file
+- chmod: change file permissions (Unix/macOS)
 - Paths should be relative to the workspace root.
 - Output ONLY the JSON object. No other text.`;
 
@@ -65,6 +70,18 @@ Rules:
     vscode.LanguageModelChatMessage.Assistant(
       '{"operation":"info","path":"package.json"}',
     ),
+    vscode.LanguageModelChatMessage.User('search for "TODO" in all files'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"findText","query":"TODO"}',
+    ),
+    vscode.LanguageModelChatMessage.User('grep "import React" in src folder'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"findText","query":"import React","includePattern":"src/**"}',
+    ),
+    vscode.LanguageModelChatMessage.User('change permissions of deploy.sh to 755'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"chmod","path":"deploy.sh","mode":"755"}',
+    ),
   ];
 
   const messages: vscode.LanguageModelChatMessage[] = [
@@ -95,18 +112,24 @@ Rules:
     const parsed = JSON.parse(fullText) as FileAxiomIntent;
 
     // Validate required fields
-    const validOps = ['find', 'rename', 'list', 'duplicate', 'move', 'delete', 'info'];
+    const validOps = ['find', 'rename', 'list', 'duplicate', 'move', 'delete', 'info', 'findText', 'chmod'];
     if (!parsed.operation || !validOps.includes(parsed.operation)) {
       throw new Error('Invalid operation');
     }
     if (parsed.operation === 'find' && !parsed.pattern) {
       throw new Error('Missing pattern for find operation');
     }
+    if (parsed.operation === 'findText' && !parsed.query) {
+      throw new Error('Missing query for findText operation');
+    }
     if (['rename', 'duplicate', 'move'].includes(parsed.operation) && (!parsed.source || !parsed.target)) {
       throw new Error('Missing source or target');
     }
     if (['list', 'delete', 'info'].includes(parsed.operation) && !parsed.path) {
       throw new Error('Missing path');
+    }
+    if (parsed.operation === 'chmod' && (!parsed.path || !parsed.mode)) {
+      throw new Error('Missing path or mode for chmod operation');
     }
 
     return parsed;
@@ -188,6 +211,28 @@ function regexFallback(prompt: string): FileAxiomIntent {
       pattern = `**/*${pattern}*`;
     }
     return { operation: 'find', pattern };
+  }
+
+  // Detect findText: "grep X", "search for text X", "find text X"
+  const findTextMatch = prompt.match(
+    /(?:grep|search\s+(?:for\s+)?text|find\s+text)\s+["']?([^"']+)["']?(?:\s+in\s+(.+))?/i,
+  );
+  if (findTextMatch) {
+    const query = findTextMatch[1].trim();
+    const includePattern = findTextMatch[2]?.trim();
+    return { operation: 'findText', query, includePattern };
+  }
+
+  // Detect chmod: "chmod X to Y", "change permissions of X to Y", "set X to Y"
+  const chmodMatch = prompt.match(
+    /(?:chmod|change\s+permissions?\s+of|set\s+permissions?\s+of|make)\s+(.+?)\s+(?:to\s+)?(\d{3,4})/i,
+  );
+  if (chmodMatch) {
+    return {
+      operation: 'chmod',
+      path: chmodMatch[1].trim(),
+      mode: chmodMatch[2].trim(),
+    };
   }
 
   throw new FileAxiomError(

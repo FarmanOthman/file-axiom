@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations } from './fileOperations';
+import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations, findText, changePermissions } from './fileOperations';
 import { parseIntent, parseBulkIntent, isBulkOperation } from './intentParser';
 import { FileAxiomError } from './types';
 
@@ -79,6 +79,12 @@ const chatHandler: vscode.ChatRequestHandler = async (
     if (request.command === 'info') {
       return await handleInfo(request.prompt, stream);
     }
+    if (request.command === 'findText' || request.command === 'grep') {
+      return await handleFindText(request.prompt, stream);
+    }
+    if (request.command === 'chmod') {
+      return await handleChmod(request.prompt, stream);
+    }
     if (request.command === 'bulk') {
       return await handleBulk(request.prompt, stream, request.model, token);
     }
@@ -123,6 +129,15 @@ const chatHandler: vscode.ChatRequestHandler = async (
     }
     if (intent.operation === 'info' && intent.path) {
       return await handleInfo(intent.path, stream);
+    }
+    if (intent.operation === 'findText' && intent.query) {
+      const queryStr = intent.includePattern 
+        ? `${intent.query} in ${intent.includePattern}`
+        : intent.query;
+      return await handleFindText(queryStr, stream, intent.includePattern);
+    }
+    if (intent.operation === 'chmod' && intent.path && intent.mode) {
+      return await handleChmod(`${intent.path} ${intent.mode}`, stream);
     }
 
     stream.markdown(usageHelp());
@@ -327,6 +342,105 @@ async function handleInfo(
   return { metadata: { command: 'info' } };
 }
 
+// ── /findText (Grep) Handler ─────────────────────────────────
+
+async function handleFindText(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+  includePattern?: string,
+): Promise<vscode.ChatResult> {
+  // Parse the prompt to extract query and optional include pattern
+  let query = prompt.trim();
+  let include = includePattern;
+
+  // Check if prompt has "in <pattern>" suffix
+  const inMatch = prompt.match(/^(.+?)\s+in\s+(.+)$/i);
+  if (inMatch) {
+    query = inMatch[1].trim();
+    include = inMatch[2].trim();
+  }
+
+  stream.progress(`Searching for "${query}"…`);
+
+  const result = await findText(query, {
+    includePattern: include,
+    isRegex: false,
+    isCaseSensitive: false,
+    maxResults: 500,
+  });
+
+  if (result.totalMatches === 0) {
+    stream.markdown(`No matches found for \`${query}\`.`);
+    return { metadata: { command: 'findText' } };
+  }
+
+  stream.markdown(
+    `**Found ${result.totalMatches} match(es)** for \`${query}\` across ${result.files.length} file(s):\n\n`,
+  );
+
+  for (const file of result.files.slice(0, 10)) {
+    const relPath = vscode.workspace.asRelativePath(file.uri);
+    stream.markdown(`\n**${relPath}** (${file.matches.length} match(es)):\n\n`);
+    
+    for (const match of file.matches.slice(0, 5)) {
+      stream.markdown(`- Line ${match.line}: \`${match.preview}\`\n`);
+      stream.button({
+        command: 'vscode.open',
+        arguments: [file.uri, { selection: new vscode.Range(match.line - 1, match.column - 1, match.line - 1, match.column - 1 + match.text.length) }],
+        title: 'Open',
+      });
+      stream.markdown('\n');
+    }
+
+    if (file.matches.length > 5) {
+      stream.markdown(`  ... and ${file.matches.length - 5} more match(es)\n`);
+    }
+  }
+
+  if (result.files.length > 10) {
+    stream.markdown(`\n_... and ${result.files.length - 10} more file(s)_\n`);
+  }
+
+  return { metadata: { command: 'findText' } };
+}
+
+// ── /chmod Handler ───────────────────────────────────────────
+
+async function handleChmod(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  // Parse: "file.sh 755" or "file.sh to 755"
+  const parts = prompt.split(/\s+(?:to\s+)?/);
+
+  if (parts.length < 2 || !parts[0].trim() || !parts[1].trim()) {
+    stream.markdown(
+      '**Usage:** `/chmod file.sh 755`\n\n' +
+        'Provide the file path and permission mode (e.g., 755, 644).',
+    );
+    return { metadata: { command: 'chmod' } };
+  }
+
+  const filePath = parts[0].trim();
+  const mode = parts[1].trim();
+
+  stream.progress(`Changing permissions of ${filePath} to ${mode}…`);
+
+  const result = await changePermissions(filePath, mode);
+
+  if (result.success) {
+    stream.markdown(
+      `**Permissions updated** for \`${filePath}\`\n\n` +
+        `- **Old mode:** ${result.oldMode}\n` +
+        `- **New mode:** ${result.newMode}\n`,
+    );
+  } else {
+    stream.markdown(`**Failed** to change permissions for \`${filePath}\`.`);
+  }
+
+  return { metadata: { command: 'chmod' } };
+}
+
 // ── /bulk Handler (Multiple Files) ──────────────────────────
 
 async function handleBulk(
@@ -528,12 +642,14 @@ function usageHelp(): string {
     '| Command | Example |',
     '|---------|---------|',
     '| `/find` | `@axiom /find **/*.ts` |',
+    '| `/findText` (grep) | `@axiom /grep TODO in src/**` |',
     '| `/rename` | `@axiom /rename old.ts to new.ts` |',
     '| `/list` | `@axiom /list src` |',
     '| `/duplicate` | `@axiom /duplicate file.ts to copy.ts` |',
     '| `/move` | `@axiom /move file.ts to folder/file.ts` |',
     '| `/delete` | `@axiom /delete old-file.ts` |',
     '| `/info` | `@axiom /info package.json` |',
+    '| `/chmod` | `@axiom /chmod deploy.sh 755` |',
     '| `/bulk` | `@axiom /bulk rename all .js files to .ts` |',
     '| *Natural language* | `@axiom show me files in src folder` |',
     '| *Bulk NL* | `@axiom delete all test files` |',

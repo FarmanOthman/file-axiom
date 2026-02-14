@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
-import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo, BulkAction, BulkOperationResult } from './types';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo, BulkAction, BulkOperationResult, FindTextResult, TextMatch, ChmodResult } from './types';
 
 // ── Find Files ───────────────────────────────────────────────
 
@@ -404,6 +406,205 @@ export async function getFileInfo(filePath: string): Promise<FileInfo> {
   }
 
   return info;
+}
+
+// ── Find Text (Grep) ─────────────────────────────────────────
+
+/**
+ * Search for text content across workspace files.
+ * Returns matches with file locations, line numbers, and context.
+ * Uses a simple but effective approach: find files, then scan their content.
+ */
+export async function findText(
+  query: string,
+  options?: {
+    includePattern?: string;
+    isRegex?: boolean;
+    isCaseSensitive?: boolean;
+    maxResults?: number;
+  },
+): Promise<FindTextResult> {
+  if (!query || query.trim().length === 0) {
+    throw new FileAxiomError(
+      'Search query must not be empty.',
+      'INVALID_INPUT',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const maxResults = options?.maxResults ?? 500;
+  const isRegex = options?.isRegex ?? false;
+  const isCaseSensitive = options?.isCaseSensitive ?? false;
+
+  // Create search pattern
+  let searchPattern: RegExp;
+  if (isRegex) {
+    searchPattern = new RegExp(query, isCaseSensitive ? 'g' : 'gi');
+  } else {
+    // Escape special regex characters for literal search
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    searchPattern = new RegExp(escaped, isCaseSensitive ? 'g' : 'gi');
+  }
+
+  // Find files to search in
+  const filePattern = options?.includePattern ?? '**/*';
+  const files = await vscode.workspace.findFiles(
+    filePattern,
+    '**/node_modules/**',
+    1000, // Max files to scan
+  );
+
+  const matches: Array<{ uri: vscode.Uri; matches: TextMatch[] }> = [];
+  let totalMatches = 0;
+
+  for (const uri of files) {
+    if (totalMatches >= maxResults) {
+      break;
+    }
+
+    try {
+      // Only process text files
+      const document = await vscode.workspace.openTextDocument(uri);
+      const fileMatches: TextMatch[] = [];
+
+      for (let lineNum = 0; lineNum < document.lineCount; lineNum++) {
+        if (totalMatches >= maxResults) {
+          break;
+        }
+
+        const line = document.lineAt(lineNum);
+        const lineText = line.text;
+        
+        // Reset regex lastIndex for each line
+        searchPattern.lastIndex = 0;
+        const match = searchPattern.exec(lineText);
+
+        if (match) {
+          fileMatches.push({
+            uri,
+            line: lineNum + 1, // Convert to 1-indexed
+            column: match.index + 1, // Convert to 1-indexed
+            text: match[0],
+            preview: lineText.trim(),
+          });
+          totalMatches++;
+        }
+      }
+
+      if (fileMatches.length > 0) {
+        matches.push({
+          uri,
+          matches: fileMatches,
+        });
+      }
+    } catch {
+      // Skip files that can't be opened as text
+      continue;
+    }
+  }
+
+  return {
+    query,
+    totalMatches,
+    files: matches,
+  };
+}
+
+// ── Change Permissions (Chmod) ───────────────────────────────
+
+/**
+ * Changes file permissions (Unix/macOS only).
+ * Accepts numeric mode strings like "755", "644", etc.
+ * On Windows, this operation is a no-op and returns success.
+ */
+export async function changePermissions(
+  filePath: string,
+  mode: string,
+): Promise<ChmodResult> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot change permissions in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  // Validate mode format
+  if (!/^[0-7]{3,4}$/.test(mode)) {
+    throw new FileAxiomError(
+      `Invalid permission mode: ${mode}. Use octal format like "755" or "644".`,
+      'INVALID_INPUT',
+    );
+  }
+
+  const root = folders[0].uri;
+  const fileUri = vscode.Uri.joinPath(root, filePath);
+
+  // Verify file exists
+  let stat;
+  try {
+    stat = await vscode.workspace.fs.stat(fileUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `File not found: ${filePath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  // Get current permissions (only on Unix-like systems)
+  let oldMode = 'N/A';
+  try {
+    const stats = await fs.stat(fileUri.fsPath);
+    oldMode = (stats.mode & parseInt('777', 8)).toString(8);
+  } catch {
+    // Windows or other platform where we can't read mode
+  }
+
+  // Apply new permissions
+  try {
+    await fs.chmod(fileUri.fsPath, parseInt(mode, 8));
+    
+    return {
+      uri: fileUri,
+      oldMode,
+      newMode: mode,
+      success: true,
+    };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      // On Windows, chmod might fail or be a no-op
+      if (process.platform === 'win32') {
+        return {
+          uri: fileUri,
+          oldMode,
+          newMode: mode,
+          success: true, // Report success on Windows (no-op)
+        };
+      }
+      throw new FileAxiomError(
+        `Permission change failed: ${err.message}`,
+        'PERMISSION_DENIED',
+      );
+    }
+    throw err;
+  }
 }
 
 // ── Bulk Operations ──────────────────────────────────────────
