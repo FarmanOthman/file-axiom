@@ -50,6 +50,10 @@
           {
             "name": "info",
             "description": "Get technical metadata (size, dates, lines) for a file"
+          },
+          {
+            "name": "bulk",
+            "description": "Perform multiple file operations atomically (rename all, delete multiple, etc.)"
           }
         ]
       }

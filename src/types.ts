@@ -58,3 +58,34 @@ export interface FileInfo {
   type: 'File' | 'Directory';
   lines?: number; // Only for text files
 }
+
+// ── Bulk Operations ──────────────────────────────────────────
+
+export type BulkActionType = 'rename' | 'delete' | 'duplicate' | 'move';
+
+export interface BulkAction {
+  type: BulkActionType;
+  params: {
+    source?: string;
+    target?: string;
+    path?: string;
+  };
+}
+
+export interface BulkIntent {
+  actions: BulkAction[];
+  dryRun?: boolean;
+}
+
+export interface BulkOperationResult {
+  successCount: number;
+  failedCount: number;
+  totalReferencesUpdated: number;
+  operations: Array<{
+    type: BulkActionType;
+    source?: string;
+    target?: string;
+    success: boolean;
+    error?: string;
+  }>;
+}

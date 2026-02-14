@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FileAxiomError, FileAxiomIntent } from './types';
+import { FileAxiomError, FileAxiomIntent, BulkIntent } from './types';
 
 /**
  * Uses the Language Model API to extract a structured intent from a
@@ -195,4 +195,121 @@ function regexFallback(prompt: string): FileAxiomIntent {
       'Try "@axiom /find *.ts" or "@axiom /rename old.ts to new.ts".',
     'INVALID_INPUT',
   );
+}
+
+// ── Bulk Intent Parser ───────────────────────────────────────
+
+/**
+ * Parses natural language requests that involve MULTIPLE file operations.
+ * Examples: "rename all .js files to .ts", "delete all test files"
+ * Returns a BulkIntent with an array of actions.
+ */
+export async function parseBulkIntent(
+  prompt: string,
+  model: vscode.LanguageModelChat,
+  token: vscode.CancellationToken,
+): Promise<BulkIntent> {
+  const systemPrompt = `You are a bulk file operation intent extractor.
+Given a user request that involves MULTIPLE files, output a JSON object with an array of actions.
+
+Schema:
+{
+  "actions": [
+    {
+      "type": "rename" | "delete" | "duplicate" | "move",
+      "params": {
+        "source": "<source file path>",
+        "target": "<target file path (for rename/duplicate/move)>",
+        "path": "<file path (for delete)>"
+      }
+    }
+  ]
+}
+
+Rules:
+- For plural requests like "rename all X", expand into multiple actions
+- For pattern-based requests, use glob patterns to describe the files
+- type: "rename" (same dir), "move" (different dir), "duplicate" (copy), "delete" (trash)
+- Output ONLY the JSON object. No markdown, no explanation.
+
+Examples:
+User: "rename all .js files to .ts"
+Assistant: {"actions":[{"type":"rename","params":{"source":"**/*.js","target":"**/*.ts"}}]}
+
+User: "delete old-test.js and deprecated.js"
+Assistant: {"actions":[{"type":"delete","params":{"path":"old-test.js"}},{"type":"delete","params":{"path":"deprecated.js"}}]}
+
+User: "move all utils to src/helpers"
+Assistant: {"actions":[{"type":"move","params":{"source":"**/*utils*","target":"src/helpers/"}}]}`;
+
+  const messages: vscode.LanguageModelChatMessage[] = [
+    vscode.LanguageModelChatMessage.User(systemPrompt),
+    vscode.LanguageModelChatMessage.User(prompt),
+  ];
+
+  try {
+    const response = await model.sendRequest(
+      messages,
+      { justification: 'Parsing bulk file operation intent for @axiom' },
+      token,
+    );
+
+    // Collect the full streamed response
+    let fullText = '';
+    for await (const chunk of response.text) {
+      fullText += chunk;
+    }
+
+    // Strip markdown code fences
+    fullText = fullText
+      .replace(/```(?:json)?\s*/g, '')
+      .replace(/```/g, '')
+      .trim();
+
+    const parsed = JSON.parse(fullText) as BulkIntent;
+
+    // Validate structure
+    if (!parsed.actions || !Array.isArray(parsed.actions)) {
+      throw new Error('Invalid bulk intent: missing actions array');
+    }
+
+    // Validate each action
+    for (const action of parsed.actions) {
+      if (!action.type || !['rename', 'delete', 'duplicate', 'move'].includes(action.type)) {
+        throw new Error(`Invalid action type: ${action.type}`);
+      }
+      if (!action.params) {
+        throw new Error('Invalid action: missing params');
+      }
+    }
+
+    return parsed;
+  } catch (err) {
+    throw new FileAxiomError(
+      `Could not parse bulk operation request: "${prompt}". ` +
+        'Try being more specific, e.g., "@axiom /bulk rename all .js files to .ts".',
+      'INVALID_INPUT',
+    );
+  }
+}
+
+/**
+ * Detects if a prompt is requesting a bulk operation (multiple files).
+ * Returns true for prompts with "all", "every", plural forms, or comma-separated lists.
+ */
+export function isBulkOperation(prompt: string): boolean {
+  const lowerPrompt = prompt.toLowerCase();
+  
+  // Check for bulk keywords
+  const bulkKeywords = [
+    /\ball\b/,           // "all files"
+    /\bevery\b/,         // "every .js file"
+    /\beaches?\b/,       // "each file"
+    /\bmultiple\b/,      // "multiple files"
+    /\bfiles\b/,         // plural "files" (not "file")
+    /\band\b.*\band\b/,  // "X and Y and Z"
+    /,.*,/,              // comma-separated list "X, Y, Z"
+  ];
+
+  return bulkKeywords.some(regex => regex.test(lowerPrompt));
 }

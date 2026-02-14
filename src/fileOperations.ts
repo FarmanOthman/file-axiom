@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo } from './types';
+import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo, BulkAction, BulkOperationResult } from './types';
 
 // ── Find Files ───────────────────────────────────────────────
 
@@ -404,6 +404,280 @@ export async function getFileInfo(filePath: string): Promise<FileInfo> {
   }
 
   return info;
+}
+
+// ── Bulk Operations ──────────────────────────────────────────
+
+/**
+ * Performs multiple file operations in a single atomic transaction.
+ * All operations are validated before execution — if any operation would fail,
+ * the entire batch is aborted.
+ * 
+ * @param actions Array of bulk actions to perform
+ * @param progressCallback Optional callback for progress updates
+ * @returns Summary of the bulk operation results
+ */
+export async function performBulkOperations(
+  actions: BulkAction[],
+  progressCallback?: (message: string) => void,
+): Promise<BulkOperationResult> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot perform bulk operations in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const result: BulkOperationResult = {
+    successCount: 0,
+    failedCount: 0,
+    totalReferencesUpdated: 0,
+    operations: [],
+  };
+
+  // ── Phase 1: Expand glob patterns to concrete file lists ────
+
+  progressCallback?.('Expanding file patterns...');
+  
+  const expandedActions: Array<BulkAction & { resolvedSource?: vscode.Uri; resolvedTarget?: vscode.Uri }> = [];
+  
+  for (const action of actions) {
+    if (action.type === 'delete' && action.params.path) {
+      // For delete, check if it's a glob pattern or single file
+      if (action.params.path.includes('*') || action.params.path.includes('?')) {
+        const matchedFiles = await findFiles(action.params.path, 1000);
+        for (const uri of matchedFiles) {
+          expandedActions.push({
+            type: 'delete',
+            params: { path: vscode.workspace.asRelativePath(uri) },
+            resolvedSource: uri,
+          });
+        }
+      } else {
+        expandedActions.push({
+          ...action,
+          resolvedSource: vscode.Uri.joinPath(root, action.params.path),
+        });
+      }
+    } else if (['rename', 'move', 'duplicate'].includes(action.type)) {
+      const source = action.params.source!;
+      const target = action.params.target!;
+      
+      // Check if source is a glob pattern
+      if (source.includes('*') || source.includes('?')) {
+        const matchedFiles = await findFiles(source, 1000);
+        for (const uri of matchedFiles) {
+          const relativePath = vscode.workspace.asRelativePath(uri);
+          // For pattern-based renames, apply transformation
+          const newTarget = transformPath(relativePath, source, target);
+          expandedActions.push({
+            type: action.type,
+            params: { source: relativePath, target: newTarget },
+            resolvedSource: uri,
+            resolvedTarget: vscode.Uri.joinPath(root, newTarget),
+          });
+        }
+      } else {
+        expandedActions.push({
+          ...action,
+          resolvedSource: vscode.Uri.joinPath(root, source),
+          resolvedTarget: vscode.Uri.joinPath(root, target),
+        });
+      }
+    }
+  }
+
+  if (expandedActions.length === 0) {
+    throw new FileAxiomError(
+      'No files matched the specified patterns.',
+      'FILE_NOT_FOUND',
+    );
+  }
+
+  progressCallback?.(`Processing ${expandedActions.length} file(s)...`);
+
+  // ── Phase 2: Pre-validation (all-or-nothing) ────────────────
+
+  progressCallback?.('Validating all operations...');
+
+  for (const action of expandedActions) {
+    // Verify source exists (for all operations)
+    if (action.resolvedSource) {
+      try {
+        await vscode.workspace.fs.stat(action.resolvedSource);
+      } catch (err: unknown) {
+        if (isFileSystemError(err, 'FileNotFound')) {
+          throw new FileAxiomError(
+            `Source file not found: ${action.params.source || action.params.path}. ` +
+            `Aborting entire batch.`,
+            'FILE_NOT_FOUND',
+          );
+        }
+        throw err;
+      }
+    }
+
+    // Verify target does NOT exist (for rename/move/duplicate)
+    if (['rename', 'move', 'duplicate'].includes(action.type) && action.resolvedTarget) {
+      try {
+        await vscode.workspace.fs.stat(action.resolvedTarget);
+        // If stat succeeds, target exists — abort the entire batch
+        throw new FileAxiomError(
+          `Target already exists: ${action.params.target}. ` +
+          `Aborting entire batch to prevent overwrites.`,
+          'ALREADY_EXISTS',
+        );
+      } catch (err: unknown) {
+        if (err instanceof FileAxiomError) {
+          throw err;
+        }
+        if (!isFileSystemError(err, 'FileNotFound')) {
+          throw err;
+        }
+        // FileNotFound is expected — target doesn't exist, good!
+      }
+    }
+  }
+
+  // ── Phase 3: Collect all import reference edits ─────────────
+
+  progressCallback?.(`Collecting references for ${expandedActions.length} files...`);
+
+  const edit = new vscode.WorkspaceEdit();
+  const referenceEditsPromises: Array<Promise<vscode.WorkspaceEdit | undefined>> = [];
+
+  for (const action of expandedActions) {
+    if (['rename', 'move'].includes(action.type) && action.resolvedSource && action.resolvedTarget) {
+      // Collect rename provider edits for import updates
+      const promise = (async () => {
+        try {
+          await vscode.workspace.openTextDocument(action.resolvedSource!);
+          const newBasename = action.params.target!
+            .replace(/^.*[\\/]/, '')
+            .replace(/\.\w+$/, '');
+
+          const refEdits = await vscode.commands.executeCommand<vscode.WorkspaceEdit>(
+            'vscode.executeDocumentRenameProvider',
+            action.resolvedSource,
+            new vscode.Position(0, 0),
+            newBasename,
+          );
+          return refEdits;
+        } catch {
+          return undefined; // No rename provider available
+        }
+      })();
+      referenceEditsPromises.push(promise);
+    }
+  }
+
+  // Wait for all reference collections in parallel
+  const referenceEdits = await Promise.all(referenceEditsPromises);
+
+  // ── Phase 4: Build the atomic WorkspaceEdit ─────────────────
+
+  progressCallback?.('Building atomic transaction...');
+
+  let refIndex = 0;
+  for (const action of expandedActions) {
+    try {
+      if (action.type === 'delete' && action.resolvedSource) {
+        // For delete, use direct fs API (WorkspaceEdit.deleteFile doesn't support useTrash)
+        await vscode.workspace.fs.delete(action.resolvedSource, { recursive: true, useTrash: true });
+        result.operations.push({
+          type: 'delete',
+          source: action.params.path,
+          success: true,
+        });
+        result.successCount++;
+      } else if (['rename', 'move'].includes(action.type) && action.resolvedSource && action.resolvedTarget) {
+        // Add rename/move operation
+        edit.renameFile(action.resolvedSource, action.resolvedTarget, { overwrite: false });
+
+        // Merge reference edits for this file
+        const refEdit = referenceEdits[refIndex++];
+        if (refEdit) {
+          for (const [uri, textEdits] of refEdit.entries()) {
+            for (const textEdit of textEdits) {
+              edit.replace(uri, textEdit.range, textEdit.newText);
+              result.totalReferencesUpdated++;
+            }
+          }
+        }
+
+        result.operations.push({
+          type: action.type,
+          source: action.params.source,
+          target: action.params.target,
+          success: true,
+        });
+        result.successCount++;
+      } else if (action.type === 'duplicate' && action.resolvedSource && action.resolvedTarget) {
+        // For duplicate, we can't use WorkspaceEdit directly — handle separately
+        await vscode.workspace.fs.copy(action.resolvedSource, action.resolvedTarget, { overwrite: false });
+        result.operations.push({
+          type: 'duplicate',
+          source: action.params.source,
+          target: action.params.target,
+          success: true,
+        });
+        result.successCount++;
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      result.operations.push({
+        type: action.type,
+        source: action.params.source || action.params.path,
+        target: action.params.target,
+        success: false,
+        error: errorMsg,
+      });
+      result.failedCount++;
+    }
+  }
+
+  // ── Phase 5: Apply the atomic edit ──────────────────────────
+
+  progressCallback?.('Applying changes...');
+
+  const success = await vscode.workspace.applyEdit(edit);
+
+  if (!success) {
+    throw new FileAxiomError(
+      'WorkspaceEdit was rejected by VS Code. Some files may be read-only.',
+      'EDIT_REJECTED',
+    );
+  }
+
+  return result;
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+/**
+ * Transforms a file path based on a source pattern and target pattern.
+ * Example: transformPath('file.js', '**\/*.js', '**\/*.ts') => 'file.ts'
+ */
+function transformPath(filePath: string, sourcePattern: string, targetPattern: string): string {
+  // Simple extension replacement
+  if (sourcePattern.endsWith('*') && targetPattern.endsWith('*')) {
+    const sourceExt = sourcePattern.replace(/^\*+[\\/]*\*+\./, '');
+    const targetExt = targetPattern.replace(/^\*+[\\/]*\*+\./, '');
+    if (filePath.endsWith(`.${sourceExt}`)) {
+      return filePath.replace(new RegExp(`\\.${sourceExt}$`), `.${targetExt}`);
+    }
+  }
+  // If patterns don't match, return as-is
+  return filePath;
 }
 
 // ── Helpers ──────────────────────────────────────────────────

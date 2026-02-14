@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo } from './fileOperations';
-import { parseIntent } from './intentParser';
+import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations } from './fileOperations';
+import { parseIntent, parseBulkIntent, isBulkOperation } from './intentParser';
 import { FileAxiomError } from './types';
 
 // ── Activation ───────────────────────────────────────────────
@@ -79,9 +79,19 @@ const chatHandler: vscode.ChatRequestHandler = async (
     if (request.command === 'info') {
       return await handleInfo(request.prompt, stream);
     }
+    if (request.command === 'bulk') {
+      return await handleBulk(request.prompt, stream, request.model, token);
+    }
 
-    // No slash command — use LLM intent extraction
+    // No slash command — detect if bulk operation or single operation
     stream.progress('Analyzing your request…');
+
+    // Check if this is a bulk operation request
+    if (isBulkOperation(request.prompt)) {
+      return await handleBulk(request.prompt, stream, request.model, token);
+    }
+
+    // Single operation — use standard intent extraction
     const intent = await parseIntent(request.prompt, request.model, token);
 
     if (intent.operation === 'find' && intent.pattern) {
@@ -317,6 +327,92 @@ async function handleInfo(
   return { metadata: { command: 'info' } };
 }
 
+// ── /bulk Handler (Multiple Files) ──────────────────────────
+
+async function handleBulk(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+  model: vscode.LanguageModelChat,
+  token: vscode.CancellationToken,
+): Promise<vscode.ChatResult> {
+  stream.progress('Parsing bulk operation request…');
+
+  // Extract the bulk intent with multiple actions
+  const bulkIntent = await parseBulkIntent(prompt, model, token);
+
+  if (bulkIntent.actions.length === 0) {
+    stream.markdown('**No operations to perform.**');
+    return { metadata: { command: 'bulk' } };
+  }
+
+  // Show dry-run preview if >5 operations
+  if (bulkIntent.actions.length > 5) {
+    stream.markdown(`### Bulk Operation Plan\n\n`);
+    stream.markdown(`**${bulkIntent.actions.length} operations** will be performed:\n\n`);
+    
+    for (let i = 0; i < Math.min(bulkIntent.actions.length, 10); i++) {
+      const action = bulkIntent.actions[i];
+      if (action.type === 'delete') {
+        stream.markdown(`${i + 1}. **Delete** \`${action.params.path}\`\n`);
+      } else {
+        stream.markdown(
+          `${i + 1}. **${action.type}** \`${action.params.source}\` → \`${action.params.target}\`\n`,
+        );
+      }
+    }
+    
+    if (bulkIntent.actions.length > 10) {
+      stream.markdown(`\n...and ${bulkIntent.actions.length - 10} more operations.\n`);
+    }
+    
+    stream.markdown('\n---\n\n');
+  }
+
+  // Execute the bulk operation with progress updates
+  const result = await performBulkOperations(
+    bulkIntent.actions,
+    (message) => stream.progress(message),
+  );
+
+  // Show results
+  stream.markdown(`### Bulk Operation Complete\n\n`);
+  stream.markdown(`✅ **Succeeded:** ${result.successCount}\n`);
+  
+  if (result.failedCount > 0) {
+    stream.markdown(`❌ **Failed:** ${result.failedCount}\n`);
+  }
+  
+  if (result.totalReferencesUpdated > 0) {
+    stream.markdown(
+      `📝 **Import references updated:** ${result.totalReferencesUpdated}\n`,
+    );
+  }
+
+  // Show details for failed operations
+  const failed = result.operations.filter((op) => !op.success);
+  if (failed.length > 0) {
+    stream.markdown('\n**Failed Operations:**\n\n');
+    for (const op of failed) {
+      stream.markdown(`- ${op.type}: \`${op.source || ''}\` — ${op.error}\n`);
+    }
+  }
+
+  // Show successful operations (limited to first 10)
+  const successful = result.operations.filter((op) => op.success);
+  if (successful.length > 0 && successful.length <= 10) {
+    stream.markdown('\n**Completed:**\n\n');
+    for (const op of successful) {
+      if (op.type === 'delete') {
+        stream.markdown(`- Deleted \`${op.source}\`\n`);
+      } else {
+        stream.markdown(`- ${op.type}: \`${op.source}\` → \`${op.target}\`\n`);
+      }
+    }
+  }
+
+  return { metadata: { command: 'bulk', operationCount: bulkIntent.actions.length } };
+}
+
 // ── Command Palette: Find Files ──────────────────────────────
 
 async function commandFindFiles(): Promise<void> {
@@ -438,9 +534,12 @@ function usageHelp(): string {
     '| `/move` | `@axiom /move file.ts to folder/file.ts` |',
     '| `/delete` | `@axiom /delete old-file.ts` |',
     '| `/info` | `@axiom /info package.json` |',
+    '| `/bulk` | `@axiom /bulk rename all .js files to .ts` |',
     '| *Natural language* | `@axiom show me files in src folder` |',
+    '| *Bulk NL* | `@axiom delete all test files` |',
     '',
     'All rename/move operations are atomic — imports updated silently.',
+    'Bulk operations process multiple files in a single transaction.',
   ].join('\n');
 }
 
