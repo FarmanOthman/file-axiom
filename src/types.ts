@@ -24,21 +24,27 @@ export class FileAxiomError extends Error {
 // ── Intent Parser Types ──────────────────────────────────────
 
 export interface FileAxiomIntent {
-  operation: 'find' | 'rename' | 'list' | 'duplicate' | 'move' | 'delete' | 'info' | 'findText' | 'chmod';
+  operation: 'find' | 'rename' | 'list' | 'duplicate' | 'move' | 'delete' | 'info' | 'findText' | 'chmod' | 'symlink' | 'replace';
   /** Glob pattern for find operations */
   pattern?: string;
   /** Search query for findText operations */
   query?: string;
   /** File pattern to search within (for findText) */
   includePattern?: string;
-  /** Source file path for rename/duplicate/move operations */
+  /** Source file path for rename/duplicate/move/symlink operations */
   source?: string;
-  /** Target file path for rename/duplicate/move operations */
+  /** Target file path for rename/duplicate/move/symlink operations */
   target?: string;
   /** Directory path for list operations */
   path?: string;
   /** Permissions mode for chmod operations (e.g., "755", "644") */
   mode?: string;
+  /** Search text for replace operations */
+  searchText?: string;
+  /** Replacement text for replace operations */
+  replaceText?: string;
+  /** File pattern for replace operations */
+  filePattern?: string;
 }
 
 // ── Operation Results ────────────────────────────────────────
@@ -87,6 +93,20 @@ export interface ChmodResult {
   oldMode: string;
   newMode: string;
   success: boolean;
+}
+
+export interface SymlinkResult {
+  sourceUri: vscode.Uri;
+  linkUri: vscode.Uri;
+}
+
+export interface ReplaceResult {
+  filesModified: number;
+  totalReplacements: number;
+  files: Array<{
+    uri: vscode.Uri;
+    replacements: number;
+  }>;
 }
 
 // ── Bulk Operations ──────────────────────────────────────────

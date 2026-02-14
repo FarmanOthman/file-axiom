@@ -16,14 +16,17 @@ Given a user request, output ONLY a JSON object — no markdown, no explanation.
 
 Schema:
 {
-  "operation": "find" | "rename" | "list" | "duplicate" | "move" | "delete" | "info" | "findText" | "chmod",
+  "operation": "find" | "rename" | "list" | "duplicate" | "move" | "delete" | "info" | "findText" | "chmod" | "symlink" | "replace",
   "pattern": "<glob pattern, only for find>",
   "query": "<search text, only for findText>",
   "includePattern": "<file pattern to search within, optional for findText>",
-  "source": "<current filename, for rename/duplicate/move>",
-  "target": "<new filename, for rename/duplicate/move>",
+  "source": "<current filename, for rename/duplicate/move/symlink>",
+  "target": "<new filename, for rename/duplicate/move/symlink>",
   "path": "<file or directory path, for list/delete/info/chmod>",
-  "mode": "<permission mode like 755 or 644, only for chmod>"
+  "mode": "<permission mode like 755 or 644, only for chmod>",
+  "searchText": "<text to search for, only for replace>",
+  "replaceText": "<replacement text, only for replace>",
+  "filePattern": "<file pattern for replace operations>"
 }
 
 Rules:
@@ -36,6 +39,8 @@ Rules:
 - delete: remove/delete a file (safely to trash)
 - info: get metadata (size, dates, lines) for a file
 - chmod: change file permissions (Unix/macOS)
+- symlink: create symbolic link
+- replace: search and replace text in files (sed)
 - Paths should be relative to the workspace root.
 - Output ONLY the JSON object. No other text.`;
 
@@ -82,6 +87,14 @@ Rules:
     vscode.LanguageModelChatMessage.Assistant(
       '{"operation":"chmod","path":"deploy.sh","mode":"755"}',
     ),
+    vscode.LanguageModelChatMessage.User('create symlink from config.json to config.link'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"symlink","source":"config.json","target":"config.link"}',
+    ),
+    vscode.LanguageModelChatMessage.User('replace "foo" with "bar" in all .ts files'),
+    vscode.LanguageModelChatMessage.Assistant(
+      '{"operation":"replace","searchText":"foo","replaceText":"bar","filePattern":"**/*.ts"}',
+    ),
   ];
 
   const messages: vscode.LanguageModelChatMessage[] = [
@@ -112,7 +125,7 @@ Rules:
     const parsed = JSON.parse(fullText) as FileAxiomIntent;
 
     // Validate required fields
-    const validOps = ['find', 'rename', 'list', 'duplicate', 'move', 'delete', 'info', 'findText', 'chmod'];
+    const validOps = ['find', 'rename', 'list', 'duplicate', 'move', 'delete', 'info', 'findText', 'chmod', 'symlink', 'replace'];
     if (!parsed.operation || !validOps.includes(parsed.operation)) {
       throw new Error('Invalid operation');
     }
@@ -122,7 +135,7 @@ Rules:
     if (parsed.operation === 'findText' && !parsed.query) {
       throw new Error('Missing query for findText operation');
     }
-    if (['rename', 'duplicate', 'move'].includes(parsed.operation) && (!parsed.source || !parsed.target)) {
+    if (['rename', 'duplicate', 'move', 'symlink'].includes(parsed.operation) && (!parsed.source || !parsed.target)) {
       throw new Error('Missing source or target');
     }
     if (['list', 'delete', 'info'].includes(parsed.operation) && !parsed.path) {
@@ -130,6 +143,9 @@ Rules:
     }
     if (parsed.operation === 'chmod' && (!parsed.path || !parsed.mode)) {
       throw new Error('Missing path or mode for chmod operation');
+    }
+    if (parsed.operation === 'replace' && (!parsed.searchText || !parsed.replaceText)) {
+      throw new Error('Missing searchText or replaceText for replace operation');
     }
 
     return parsed;
@@ -232,6 +248,31 @@ function regexFallback(prompt: string): FileAxiomIntent {
       operation: 'chmod',
       path: chmodMatch[1].trim(),
       mode: chmodMatch[2].trim(),
+    };
+  }
+
+  // Detect symlink: "symlink X to Y", "link X to Y", "create link from X to Y"
+  const symlinkMatch = prompt.match(
+    /(?:symlink|link|create\s+(?:symlink|link)(?:\s+from)?)\s+(.+?)\s+(?:to|as)\s+(.+)/i,
+  );
+  if (symlinkMatch) {
+    return {
+      operation: 'symlink',
+      source: symlinkMatch[1].trim(),
+      target: symlinkMatch[2].trim(),
+    };
+  }
+
+  // Detect replace: "replace X with Y", "replace X with Y in Z"
+  const replaceMatch = prompt.match(
+    /replace\s+["']?([^"']+)["']?\s+with\s+["']?([^"']+)["']?(?:\s+in\s+(.+))?/i,
+  );
+  if (replaceMatch) {
+    return {
+      operation: 'replace',
+      searchText: replaceMatch[1].trim(),
+      replaceText: replaceMatch[2].trim(),
+      filePattern: replaceMatch[3]?.trim() || '**/*',
     };
   }
 

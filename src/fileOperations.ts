@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo, BulkAction, BulkOperationResult, FindTextResult, TextMatch, ChmodResult } from './types';
+import { FileAxiomError, RenameResult, DirectoryEntry, FileInfo, BulkAction, BulkOperationResult, FindTextResult, TextMatch, ChmodResult, SymlinkResult, ReplaceResult } from './types';
 
 // ── Find Files ───────────────────────────────────────────────
 
@@ -605,6 +605,239 @@ export async function changePermissions(
     }
     throw err;
   }
+}
+
+// ── Create Symbolic Link ─────────────────────────────────────
+
+/**
+ * Creates a symbolic link from target to source.
+ * On Windows, this requires administrator privileges or Developer Mode.
+ */
+export async function createSymlink(
+  sourcePath: string,
+  linkPath: string,
+): Promise<SymlinkResult> {
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot create symlinks in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const root = folders[0].uri;
+  const sourceUri = vscode.Uri.joinPath(root, sourcePath);
+  const linkUri = vscode.Uri.joinPath(root, linkPath);
+
+  // Verify source exists
+  let stat;
+  try {
+    stat = await vscode.workspace.fs.stat(sourceUri);
+  } catch (err: unknown) {
+    if (isFileSystemError(err, 'FileNotFound')) {
+      throw new FileAxiomError(
+        `Source not found: ${sourcePath}`,
+        'FILE_NOT_FOUND',
+      );
+    }
+    throw err;
+  }
+
+  // Verify link doesn't already exist
+  try {
+    await vscode.workspace.fs.stat(linkUri);
+    throw new FileAxiomError(
+      `Link path already exists: ${linkPath}`,
+      'ALREADY_EXISTS',
+    );
+  } catch (err: unknown) {
+    if (err instanceof FileAxiomError) {
+      throw err;
+    }
+    if (!isFileSystemError(err, 'FileNotFound')) {
+      throw err;
+    }
+  }
+
+  // Create parent directory if needed
+  const linkParent = vscode.Uri.joinPath(linkUri, '..');
+  try {
+    await vscode.workspace.fs.createDirectory(linkParent);
+  } catch {
+    // Directory might already exist
+  }
+
+  // Create symlink using Node.js fs
+  try {
+    const isDirectory = stat.type === vscode.FileType.Directory;
+    await fs.symlink(
+      sourceUri.fsPath,
+      linkUri.fsPath,
+      isDirectory ? 'dir' : 'file',
+    );
+
+    return {
+      sourceUri,
+      linkUri,
+    };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      throw new FileAxiomError(
+        `Symlink creation failed: ${err.message}. ` +
+          (process.platform === 'win32'
+            ? 'On Windows, symlinks require admin privileges or Developer Mode.'
+            : ''),
+        'PERMISSION_DENIED',
+      );
+    }
+    throw err;
+  }
+}
+
+// ── Replace Text (Sed) ───────────────────────────────────────
+
+/**
+ * Search and replace text content across multiple files.
+ * Like Unix 'sed', performs in-place replacements.
+ * All modifications are batched in a single WorkspaceEdit for atomicity.
+ */
+export async function replaceText(
+  searchText: string,
+  replaceText: string,
+  options?: {
+    filePattern?: string;
+    isRegex?: boolean;
+    isCaseSensitive?: boolean;
+    maxReplacements?: number;
+  },
+): Promise<ReplaceResult> {
+  if (!searchText || searchText.trim().length === 0) {
+    throw new FileAxiomError(
+      'Search text must not be empty.',
+      'INVALID_INPUT',
+    );
+  }
+
+  if (!vscode.workspace.isTrusted) {
+    throw new FileAxiomError(
+      'Workspace is not trusted. Cannot modify files in Restricted Mode.',
+      'UNTRUSTED',
+    );
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new FileAxiomError(
+      'No workspace folder is open.',
+      'NO_WORKSPACE',
+    );
+  }
+
+  const maxReplacements = options?.maxReplacements ?? 1000;
+  const isRegex = options?.isRegex ?? false;
+  const isCaseSensitive = options?.isCaseSensitive ?? false;
+
+  // Create search pattern
+  let searchPattern: RegExp;
+  if (isRegex) {
+    searchPattern = new RegExp(searchText, isCaseSensitive ? 'g' : 'gi');
+  } else {
+    // Escape special regex characters for literal search
+    const escaped = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    searchPattern = new RegExp(escaped, isCaseSensitive ? 'g' : 'gi');
+  }
+
+  // Find files to search in
+  const filePattern = options?.filePattern ?? '**/*';
+  const files = await vscode.workspace.findFiles(
+    filePattern,
+    '**/node_modules/**',
+    1000, // Max files to scan
+  );
+
+  const edit = new vscode.WorkspaceEdit();
+  let totalReplacements = 0;
+  const modifiedFiles: Array<{ uri: vscode.Uri; replacements: number }> = [];
+
+  for (const uri of files) {
+    if (totalReplacements >= maxReplacements) {
+      break;
+    }
+
+    try {
+      // Only process text files
+      const document = await vscode.workspace.openTextDocument(uri);
+      let fileReplacements = 0;
+
+      for (let lineNum = 0; lineNum < document.lineCount; lineNum++) {
+        if (totalReplacements >= maxReplacements) {
+          break;
+        }
+
+        const line = document.lineAt(lineNum);
+        const lineText = line.text;
+
+        // Check if line contains the search pattern
+        if (searchPattern.test(lineText)) {
+          // Reset regex lastIndex
+          searchPattern.lastIndex = 0;
+          const newText = lineText.replace(searchPattern, replaceText);
+
+          if (newText !== lineText) {
+            edit.replace(
+              uri,
+              new vscode.Range(lineNum, 0, lineNum, lineText.length),
+              newText,
+            );
+
+            // Count replacements
+            searchPattern.lastIndex = 0;
+            const matches = lineText.match(searchPattern);
+            const count = matches ? matches.length : 0;
+            fileReplacements += count;
+            totalReplacements += count;
+          }
+        }
+
+        // Reset regex for next line
+        searchPattern.lastIndex = 0;
+      }
+
+      if (fileReplacements > 0) {
+        modifiedFiles.push({
+          uri,
+          replacements: fileReplacements,
+        });
+      }
+    } catch {
+      // Skip files that can't be opened as text
+      continue;
+    }
+  }
+
+  // Apply all edits atomically
+  if (totalReplacements > 0) {
+    const success = await vscode.workspace.applyEdit(edit);
+    if (!success) {
+      throw new FileAxiomError(
+        'Failed to apply text replacements. Some files may be read-only.',
+        'EDIT_REJECTED',
+      );
+    }
+  }
+
+  return {
+    filesModified: modifiedFiles.length,
+    totalReplacements,
+    files: modifiedFiles,
+  };
 }
 
 // ── Bulk Operations ──────────────────────────────────────────

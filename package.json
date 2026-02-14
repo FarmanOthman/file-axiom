@@ -64,6 +64,22 @@
             "description": "Change file permissions (Unix/macOS)"
           },
           {
+            "name": "symlink",
+            "description": "Create a symbolic link from source to target"
+          },
+          {
+            "name": "link",
+            "description": "Alias for symlink - create a symbolic link"
+          },
+          {
+            "name": "replace",
+            "description": "Search and replace text in files (like sed)"
+          },
+          {
+            "name": "sed",
+            "description": "Alias for replace - search and replace text in files"
+          },
+          {
             "name": "bulk",
             "description": "Perform multiple file operations atomically (rename all, delete multiple, etc.)"
           }

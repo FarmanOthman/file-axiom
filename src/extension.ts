@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations, findText, changePermissions } from './fileOperations';
+import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations, findText, changePermissions, createSymlink, replaceText } from './fileOperations';
 import { parseIntent, parseBulkIntent, isBulkOperation } from './intentParser';
 import { FileAxiomError } from './types';
 
@@ -85,6 +85,12 @@ const chatHandler: vscode.ChatRequestHandler = async (
     if (request.command === 'chmod') {
       return await handleChmod(request.prompt, stream);
     }
+    if (request.command === 'symlink' || request.command === 'link') {
+      return await handleSymlink(request.prompt, stream);
+    }
+    if (request.command === 'replace' || request.command === 'sed') {
+      return await handleReplace(request.prompt, stream);
+    }
     if (request.command === 'bulk') {
       return await handleBulk(request.prompt, stream, request.model, token);
     }
@@ -138,6 +144,15 @@ const chatHandler: vscode.ChatRequestHandler = async (
     }
     if (intent.operation === 'chmod' && intent.path && intent.mode) {
       return await handleChmod(`${intent.path} ${intent.mode}`, stream);
+    }
+    if (intent.operation === 'symlink' && intent.source && intent.target) {
+      return await handleSymlink(`${intent.source} to ${intent.target}`, stream);
+    }
+    if (intent.operation === 'replace' && intent.searchText && intent.replaceText) {
+      const replaceStr = intent.filePattern
+        ? `${intent.searchText} with ${intent.replaceText} in ${intent.filePattern}`
+        : `${intent.searchText} with ${intent.replaceText}`;
+      return await handleReplace(replaceStr, stream);
     }
 
     stream.markdown(usageHelp());
@@ -441,6 +456,96 @@ async function handleChmod(
   return { metadata: { command: 'chmod' } };
 }
 
+// ── /symlink Handler ─────────────────────────────────
+
+async function handleSymlink(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  // Parse: "source to link" or "source as link"
+  const parts = prompt.split(/\s+(?:to|as)\s+/i);
+
+  if (parts.length < 2 || !parts[0].trim() || !parts[1].trim()) {
+    stream.markdown(
+      '**Usage:** `/symlink source.txt to link.txt`\n\n' +
+        'Create a symbolic link from source to link path.',
+    );
+    return { metadata: { command: 'symlink' } };
+  }
+
+  const source = parts[0].trim();
+  const target = parts[1].trim();
+
+  stream.progress(`Creating symlink from ${source} to ${target}…`);
+
+  const result = await createSymlink(source, target);
+
+  stream.markdown(
+    `**Symlink created** \`${source}\` → \`${target}\`\n\n` +
+      (process.platform === 'win32'
+        ? '_Note: On Windows, symlinks require admin privileges or Developer Mode._'
+        : ''),
+  );
+  stream.anchor(result.linkUri, vscode.workspace.asRelativePath(result.linkUri));
+
+  return { metadata: { command: 'symlink' } };
+}
+
+// ── /replace (Sed) Handler ─────────────────────────────
+
+async function handleReplace(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+): Promise<vscode.ChatResult> {
+  // Parse: "search with replace" or "search with replace in pattern"
+  const replaceMatch = prompt.match(
+    /(.+?)\s+with\s+(.+?)(?:\s+in\s+(.+))?$/i,
+  );
+
+  if (!replaceMatch || !replaceMatch[1] || !replaceMatch[2]) {
+    stream.markdown(
+      '**Usage:** `/replace "old" with "new" in **/*.ts`\n\n' +
+        'Search and replace text across files. File pattern is optional (defaults to all files).',
+    );
+    return { metadata: { command: 'replace' } };
+  }
+
+  const searchText = replaceMatch[1].trim().replace(/^["']|["']$/g, '');
+  const replacementText = replaceMatch[2].trim().replace(/^["']|["']$/g, '');
+  const filePattern = replaceMatch[3]?.trim();
+
+  stream.progress(`Replacing "${searchText}" with "${replacementText}"…`);
+
+  const result = await replaceText(searchText, replacementText, {
+    filePattern: filePattern || '**/*',
+    isRegex: false,
+    isCaseSensitive: false,
+    maxReplacements: 1000,
+  });
+
+  if (result.totalReplacements === 0) {
+    stream.markdown(`No matches found for \`${searchText}\`.`);
+    return { metadata: { command: 'replace' } };
+  }
+
+  stream.markdown(
+    `**Replaced ${result.totalReplacements} occurrence(s)** across ${result.filesModified} file(s):\n\n`,
+  );
+
+  for (const file of result.files.slice(0, 10)) {
+    const relPath = vscode.workspace.asRelativePath(file.uri);
+    stream.markdown(`- `);
+    stream.anchor(file.uri, relPath);
+    stream.markdown(` (${file.replacements} replacement(s))\n`);
+  }
+
+  if (result.filesModified > 10) {
+    stream.markdown(`\n_... and ${result.filesModified - 10} more file(s)_\n`);
+  }
+
+  return { metadata: { command: 'replace' } };
+}
+
 // ── /bulk Handler (Multiple Files) ──────────────────────────
 
 async function handleBulk(
@@ -650,6 +755,8 @@ function usageHelp(): string {
     '| `/delete` | `@axiom /delete old-file.ts` |',
     '| `/info` | `@axiom /info package.json` |',
     '| `/chmod` | `@axiom /chmod deploy.sh 755` |',
+    '| `/symlink` | `@axiom /symlink src to link` |',
+    '| `/replace` (sed) | `@axiom /replace "old" with "new" in **/*.ts` |',
     '| `/bulk` | `@axiom /bulk rename all .js files to .ts` |',
     '| *Natural language* | `@axiom show me files in src folder` |',
     '| *Bulk NL* | `@axiom delete all test files` |',
