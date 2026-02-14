@@ -11,6 +11,9 @@
     "AI",
     "Other"
   ],
+  "enabledApiProposals": [
+    "languageModelTools"
+  ],
   "activationEvents": [
     "onStartupFinished",
     "onChatParticipant:file-axiom.axiom",
@@ -98,7 +101,7 @@
         "name": "fileaxiom_rename",
         "displayName": "Rename Files",
         "tags": ["rename", "mv"],
-        "modelDescription": "Renames files while updating imports and references. Use when user says: rename file, change filename, mv.",
+        "modelDescription": "Tool name: fileaxiom_rename. Renames one or more files while automatically updating imports and references. Supports batch operations via the operations array.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -128,7 +131,7 @@
         "name": "fileaxiom_search",
         "displayName": "Search Files",
         "tags": ["search", "find", "files"],
-        "modelDescription": "Finds files by pattern. Use when user says: find files, search files, locate files.",
+        "modelDescription": "Tool name: fileaxiom_search. Finds files by glob pattern or regex. Never use terminal 'find' or 'ls' commands.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -153,7 +156,7 @@
         "name": "fileaxiom_replace",
         "displayName": "Replace Text",
         "tags": ["replace", "sed"],
-        "modelDescription": "Use this tool to search and replace text across one or more files atomically (like sed). All replacements are batched in a single WorkspaceEdit for full undo/redo support. Safer than terminal sed/awk because it validates before applying. Supports regex patterns and file filtering. Returns JSON with files modified and total replacements. Use this for refactoring text patterns, updating imports, or fixing typos across the codebase.",
+        "modelDescription": "Tool name: fileaxiom_replace. Search and replace text across files atomically. Safer than terminal sed/awk. Supports regex patterns and file filtering.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -193,7 +196,7 @@
         "name": "fileaxiom_delete",
         "displayName": "Delete Files",
         "tags": ["delete", "remove"],
-        "modelDescription": "Use this tool to safely delete one or more files or directories by moving them to the system trash (recoverable). Safer than 'rm' because files can be recovered. Supports glob patterns to delete multiple files at once. All operations are validated before execution. Returns JSON with success count. Never use terminal 'rm' commands—always use this tool for safe, recoverable deletion.",
+        "modelDescription": "Tool name: fileaxiom_delete. Safely deletes files by moving them to trash (recoverable). Never use terminal 'rm' commands.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -213,7 +216,7 @@
         "name": "fileaxiom_move",
         "displayName": "Move Files",
         "tags": ["move", "mv"],
-        "modelDescription": "Moves files while updating imports. Use when user says: move file, relocate file.",
+        "modelDescription": "Tool name: fileaxiom_move. Moves files while updating imports and references. Supports batch operations.",
         "inputSchema": {
           "type": "object",
           "properties": {

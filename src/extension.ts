@@ -24,6 +24,23 @@ export function activate(context: vscode.ExtensionContext): void {
   console.log('[FILE AXIOM] Extension is activating...');
   outputChannel.info('File Axiom is activating...');
 
+  // ── Step 2: Check if vscode.lm exists ────────────────────
+  console.log('[FILE AXIOM] Step 2 - lm object:', vscode.lm);
+  console.log('[FILE AXIOM] Step 2 - lm defined?', typeof vscode.lm !== 'undefined');
+  console.log('[FILE AXIOM] Step 2 - registerTool exists?', typeof vscode.lm?.registerTool === 'function');
+  
+  // ── Step 3: Check vscode.lm.tools after delay ────────────
+  setTimeout(() => {
+    console.log('[FILE AXIOM] Step 3 (after 5s) - vscode.lm?.tools:', vscode.lm?.tools);
+    console.log('[FILE AXIOM] Step 3 (after 5s) - tools array length:', vscode.lm?.tools?.length);    
+    // Check if OUR tools are in the array
+    const ourToolNames = ['fileaxiom_rename', 'fileaxiom_search', 'fileaxiom_replace', 'fileaxiom_delete', 'fileaxiom_move'];
+    const registeredTools = vscode.lm?.tools?.map(t => t.name) || [];
+    const foundTools = ourToolNames.filter(name => registeredTools.includes(name));
+    
+    console.log('[FILE AXIOM] Step 3 - OUR tools found:', foundTools);
+    console.log('[FILE AXIOM] Step 3 - Missing tools:', ourToolNames.filter(name => !registeredTools.includes(name)));  }, 5000);
+
   // ── Chat Participant ─────────────────────────────────────
 
   const participant = vscode.chat.createChatParticipant(
@@ -69,7 +86,8 @@ export function activate(context: vscode.ExtensionContext): void {
   console.log('[FILE AXIOM] Registering tools:', toolNames);
 
   try {
-    // Log when tools are being queried
+    // ── Step 4: Log tool registration ───────────────────────
+    console.log('[FILE AXIOM] Step 4 - registering tool...');
     console.log('[FILE AXIOM] Creating tool instances...');
     
     const renameTool = new BulkRenameTool();
@@ -87,6 +105,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.lm.registerTool(toolNames[3], deleteTool),
       vscode.lm.registerTool(toolNames[4], moveTool),
     ];
+    console.log('[FILE AXIOM] Step 4 - tool registered');
     console.log('[FILE AXIOM] Tool registration successful');
 
     context.subscriptions.push(...tools);
