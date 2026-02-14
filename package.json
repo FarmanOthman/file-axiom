@@ -1,0 +1,74 @@
+{
+  "name": "file-axiom",
+  "displayName": "AgentLink Files",
+  "description": "A specialized sidecar for AI Agents. Empowers agents to find, move, and rename files using deterministic APIs instead of probabilistic script generation. Zero hallucinations, zero broken imports.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.109.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onChatParticipant:file-axiom.axiom"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "file-axiom.axiom",
+        "fullName": "File Axiom",
+        "name": "axiom",
+        "description": "Deterministic file operations with atomic import updates for AI Agents.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "find",
+            "description": "Find files with Ripgrep"
+          },
+          {
+            "name": "rename",
+            "description": "Atomic rename with silent import updates"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "file-axiom.findFiles",
+        "title": "File Axiom: Find Files"
+      },
+      {
+        "command": "file-axiom.renameFile",
+        "title": "File Axiom: Rename File"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run package",
+    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.109.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.54.0",
+    "eslint": "^9.39.2",
+    "esbuild": "^0.27.2",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
