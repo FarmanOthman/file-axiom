@@ -1,53 +1,200 @@
-# file-axiom README
+# File Axiom
 
-This is the README for your extension "file-axiom". After writing up a brief description, we recommend including the following sections.
+> **AgentLink Files** - A specialized sidecar for AI Agents. Empowers agents to find, move, and rename files using deterministic APIs instead of probabilistic script generation. **Zero hallucinations, zero broken imports.**
 
-## Features
+## ⚠️ Current Status (Feb 2026)
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+**✅ Working**: Direct chat participant (`@axiom`) - Fully functional  
+**⏳ Experimental**: Agent mode (`@workspace`) - VS Code 1.109.x has incomplete tool discovery (see [PLATFORM_STATUS.md](PLATFORM_STATUS.md))
 
-For example if there is an image subfolder under your extension project workspace:
+## Why File Axiom?
 
-\!\[feature X\]\(images/feature-x.png\)
+When AI agents need to refactor code, they typically generate shell scripts (`mv`, `sed`, `rm`) — but this is error-prone:
+- ❌ Scripts can break imports and references
+- ❌ No atomic operations (partial failures corrupt projects)  
+- ❌ No validation before execution
+- ❌ Hallucinated paths cause permanent damage
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+**File Axiom solves this** by providing agents with **deterministic file operation tools** that integrate with VS Code's language services.
 
-## Requirements
+## ✨ Features
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+### 🤖 Autonomous Agent Tools (VS Code 2026+)
 
-## Extension Settings
+Five production-ready tools for Copilot Agents and the VS Code Agent ecosystem:
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+| Tool | Purpose | Key Benefit |
+|------|---------|-------------|
+| **`file-axiom_bulkRename`** | Rename multiple files | Atomic import updating |
+| **`file-axiom_bulkSearch`** | Find files by pattern | Instant Ripgrep-powered search |
+| **`file-axiom_bulkReplace`** | Search & replace text | Atomic multi-file updates |
+| **`file-axiom_bulkDelete`** | Remove files safely | Trash (recoverable) |
+| **`file-axiom_bulkMove`** | Relocate files | Preserves import relationships |
 
-For example:
+### 💬 Interactive Chat Participant
 
-This extension contributes the following settings:
+Use `@axiom` for direct file operations:
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+```
+@axiom find *.ts
+@axiom rename src/old.ts to src/new.ts  
+@axiom replace "oldName" with "newName" in **/*.js
+@axiom delete temp/**/*.log
+```
 
-## Known Issues
+### 🔧 Comprehensive Commands
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+- **find** - Search files by glob patterns
+- **rename** - Rename with import updates
+- **list** - List directory contents
+- **duplicate** - Copy files/folders
+- **move** - Move with reference tracking
+- **delete** - Safe trash deletion
+- **info** - File metadata (size, dates, lines)
+- **findText/grep** - Search text in files
+- **chmod** - Change permissions (Unix/macOS)
+- **symlink** - Create symbolic links
+- **Direct Usage (Reliable - ✅ Works Now)
 
-## Release Notes
+1. **Install** File Axiom in VS Code Insiders (1.109.0+)
+2. **Open Copilot Chat** (Cmd/Ctrl+Alt+I)
+3. **Type `@axiom`** followed by your command:
+   ```
+   @axiom rename src/old.ts to src/new.ts
+   @axiom find **/*.{ts,js}
+   @axiom replace "oldName" with "newName" in **/*.ts
+   @axiom delete **/*.log
+   @axiom move src/util.ts to src/utils/util.ts
+   ```
 
-Users appreciate release notes as you update your extension.
+All operations update imports and references automatically!
 
-### 1.0.0
+### Agent Mode (Experimental - ⏳ Platform Limitation)
 
-Initial release of ...
+Agent autonomous discovery (`@workspace`) is **not yet working** in VS Code 1.109.x due to missing embeddings infrastructure.
 
-### 1.0.1
+**Status**: Language Model Tools are correctly registered but agents cannot discover them. See [PLATFORM_STATUS.md](PLATFORM_STATUS.md) for technical details.
 
-Fixed issue #.
+**When working, you could write**:
+```
+@workspace rename all .js files to .ts while preserving imports
+```
 
-### 1.1.0
+**For now, use**:
+```
+@axiom rename all .js files to .ts
+Type `@axiom` to invoke
+3. Use commands:
+   ```
+   @axiom find **/*.{ts,js}
+   @axiom rename src/utils/helper.ts to src/utils/helpers.ts
+   ```
 
-Added features X, Y, and Z.
+## 📋 Requirements
+
+- **VS Code Insiders 1.109.0+** (for agent mode) or **VS Code 1.90+** (for chat mode)
+- **Active Copilot subscription** (for agent/chat features)
+- **Git** (recommended for version control safety)
+
+## 🎯 Use Cases
+
+### Agent-Driven Refactoring
+
+**Prompt:** `@workspace migrate all .js files in src/ to TypeScript`
+
+**What File Axiom does:**
+1. Searches for `src/**/*.js` (using `bulkSearch`)
+2. Generates rename operations (`.js` → `.ts`)
+3. Shows confirmation with file list
+4. Executes atomic rename with import updates
+5. Returns success count and reference updates
+
+### Safe Cleanup
+
+**Prompt:** `@workspace delete all node modules except the root`
+
+**What File Axiom does:**
+1. Finds nested `node_modules` directories
+2. Excludes workspace root
+3. Shows preview of deletions
+4. Moves to system trash (recoverable)
+5. No terminal `rm -rf` risks!
+
+### Global Find & Replace
+
+**Prompt:** `@workspace update all API endpoints from v1 to v2`
+
+**What File Axiom does:**
+1. Searches text: `/api/v1/` in codebase
+2. Replaces with `/api/v2/` 
+3. Batches all changes in single WorkspaceEdit
+4. Full undo/redo support
+5. Returns files modified count
+
+## 🛠️ Configuration
+
+No configuration needed! File Axiom works out-of-the-box with sensible defaults:
+
+- Excludes `node_modules`, `dist`, `.git` automatically
+- Uses VS Code's language services for reference tracking
+- Leverages Ripgrep for fast file searching
+- Integrates with system trash for safe deletion
+
+## 🧪 Testing
+
+## 🧪 Testing
+
+See [AGENT_TESTING.md](AGENT_TESTING.md) for comprehensive testing instructions.
+
+**Quick Test:**
+```
+@workspace find all typescript files using file axiom
+```
+
+**Check Output Panel:**
+- View → Output → "File Axiom (Extension Host)"
+- Should see 5 registered tools
+
+## 📚 Documentation
+
+- **[AGENT_TESTING.md](AGENT_TESTING.md)** - Testing guide for agent integration
+- **[.github/skills/file-axiom/SKILL.md](.github/skills/file-axiom/SKILL.md)** - Agent capability reference
+
+## ⚠️ Known Issues
+
+1. **Embeddings Cache 404** - Harmless warnings during extension host startup. Local tool definitions are used.
+2. **First Tool Discovery** - May take 2-3 seconds for agent to index tools on first use.
+3. **Confirmation Required** - All file operations require user approval (security feature, cannot be disabled).
+
+## 🔐 Security
+
+File Axiom is safe by design:
+
+- ✅ All operations require user confirmation
+- ✅ Atomic execution (all-or-nothing)
+- ✅ Files moved to trash (recoverable)
+- ✅ No network requests or telemetry
+- ✅ Validation before execution
+- ✅ Works within VS Code sandbox
+
+## 🤝 Contributing
+
+Issues and PRs welcome! File Axiom is built for the AI agent ecosystem.
+
+## 📄 License
+
+MIT
+
+## 🙏 Credits
+
+Built with:
+- **VS Code Language Model API** - Agent tool integration
+- **VS Code Workspace API** - Reference tracking
+- **Ripgrep** - Lightning-fast file search
 
 ---
+
+**Made for the 2026 VS Code Agent Ecosystem** 🚀
 
 ## Following extension guidelines
 

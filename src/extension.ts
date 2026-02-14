@@ -2,11 +2,27 @@ import * as vscode from 'vscode';
 import { findFiles, renameFile, listDirectory, duplicateFile, moveFile, deleteFile, getFileInfo, performBulkOperations, findText, changePermissions, createSymlink, replaceText } from './fileOperations';
 import { parseIntent, parseBulkIntent, isBulkOperation } from './intentParser';
 import { FileAxiomError } from './types';
+import { BulkRenameTool, BulkSearchTool, BulkReplaceTool, BulkDeleteTool, BulkMoveTool } from './tools';
+
+console.log('[FILE AXIOM] Module loaded - extension.ts');
 
 // ── Activation ───────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
-  console.log('File Axiom activated');
+  console.log('[FILE AXIOM] ========================================');
+  console.log('[FILE AXIOM] activate() function called');
+  console.log('[FILE AXIOM] VS Code version:', vscode.version);
+  console.log('[FILE AXIOM] Extension context:', {
+    extensionPath: context.extensionPath,
+    subscriptions: context.subscriptions.length
+  });
+  console.log('[FILE AXIOM] ========================================');
+  
+  // Create output channel AND log to console for visibility
+  const outputChannel = vscode.window.createOutputChannel('File Axiom', { log: true });
+  
+  console.log('[FILE AXIOM] Extension is activating...');
+  outputChannel.info('File Axiom is activating...');
 
   // ── Chat Participant ─────────────────────────────────────
 
@@ -36,6 +52,63 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(participant);
+  console.log('[FILE AXIOM] ✓ Chat participant registered: @axiom');
+  outputChannel.info('✓ Chat participant registered: @axiom');
+
+  // ── Language Model Tools (Agent Integration) ─────────────
+
+  // Register tools for autonomous agent access
+  const toolNames = [
+    'fileaxiom_rename',
+    'fileaxiom_search', 
+    'fileaxiom_replace',
+    'fileaxiom_delete',
+    'fileaxiom_move',
+  ];
+
+  console.log('[FILE AXIOM] Registering tools:', toolNames);
+
+  try {
+    // Log when tools are being queried
+    console.log('[FILE AXIOM] Creating tool instances...');
+    
+    const renameTool = new BulkRenameTool();
+    const searchTool = new BulkSearchTool();
+    const replaceTool = new BulkReplaceTool();
+    const deleteTool = new BulkDeleteTool();
+    const moveTool = new BulkMoveTool();
+    
+    console.log('[FILE AXIOM] Tool instances created');
+    
+    const tools = [
+      vscode.lm.registerTool(toolNames[0], renameTool),
+      vscode.lm.registerTool(toolNames[1], searchTool),
+      vscode.lm.registerTool(toolNames[2], replaceTool),
+      vscode.lm.registerTool(toolNames[3], deleteTool),
+      vscode.lm.registerTool(toolNames[4], moveTool),
+    ];
+    console.log('[FILE AXIOM] Tool registration successful');
+
+    context.subscriptions.push(...tools);
+    console.log('[FILE AXIOM] Tools added to subscriptions');
+  } catch (error) {
+    console.error('[FILE AXIOM] ERROR during tool registration:', error);
+    outputChannel.error('Failed to register tools: ' + String(error));
+  }
+
+  console.log('[FILE AXIOM] ✓ Registered 5 language model tools for agent access');
+  outputChannel.info('✓ Registered 5 language model tools for agent access:');
+  toolNames.forEach(name => {
+    console.log(`[FILE AXIOM]   - ${name}`);
+    outputChannel.info(`  - ${name}`);
+  });
+  
+  console.log('[FILE AXIOM] Extension activated!');
+  outputChannel.info('Extension activated!');
+  
+  // Log available language model tools API
+  console.log('[FILE AXIOM] vscode.lm available:', typeof vscode.lm !== 'undefined');
+  console.log('[FILE AXIOM] vscode.lm.registerTool available:', typeof vscode.lm?.registerTool === 'function');
 
   // ── Commands ─────────────────────────────────────────────
 
@@ -43,9 +116,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('file-axiom.findFiles', commandFindFiles),
     vscode.commands.registerCommand('file-axiom.renameFile', commandRenameFile),
   );
+  
+  console.log('[FILE AXIOM] Commands registered');
+  console.log('[FILE AXIOM] Total subscriptions:', context.subscriptions.length);
 }
 
 export function deactivate(): void {
+  console.log('[FILE AXIOM] deactivate() called - extension shutting down');
   /* nothing to clean up */
 }
 

@@ -3,6 +3,7 @@
   "displayName": "AgentLink Files",
   "description": "A specialized sidecar for AI Agents. Empowers agents to find, move, and rename files using deterministic APIs instead of probabilistic script generation. Zero hallucinations, zero broken imports.",
   "version": "0.0.1",
+  "publisher": "file-axiom",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -11,7 +12,13 @@
     "Other"
   ],
   "activationEvents": [
-    "onChatParticipant:file-axiom.axiom"
+    "onStartupFinished",
+    "onChatParticipant:file-axiom.axiom",
+    "onLanguageModelTool:fileaxiom_rename",
+    "onLanguageModelTool:fileaxiom_search",
+    "onLanguageModelTool:fileaxiom_replace",
+    "onLanguageModelTool:fileaxiom_delete",
+    "onLanguageModelTool:fileaxiom_move"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -84,6 +91,153 @@
             "description": "Perform multiple file operations atomically (rename all, delete multiple, etc.)"
           }
         ]
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "fileaxiom_rename",
+        "displayName": "Rename Files",
+        "tags": ["rename", "mv"],
+        "modelDescription": "Renames files while updating imports and references. Use when user says: rename file, change filename, mv.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "operations": {
+              "type": "array",
+              "description": "Array of rename operations to perform atomically",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "description": "Source file path (relative to workspace root)"
+                  },
+                  "target": {
+                    "type": "string",
+                    "description": "Target file path (relative to workspace root)"
+                  }
+                },
+                "required": ["source", "target"]
+              }
+            }
+          },
+          "required": ["operations"]
+        }
+      },
+      {
+        "name": "fileaxiom_search",
+        "displayName": "Search Files",
+        "tags": ["search", "find", "files"],
+        "modelDescription": "Finds files by pattern. Use when user says: find files, search files, locate files.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "patterns": {
+              "type": "array",
+              "description": "Array of glob patterns to search for",
+              "items": {
+                "type": "string",
+                "description": "Glob pattern (e.g., '**/*.ts', 'src/**/*.json')"
+              }
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Maximum number of results per pattern (default: 100)",
+              "default": 100
+            }
+          },
+          "required": ["patterns"]
+        }
+      },
+      {
+        "name": "fileaxiom_replace",
+        "displayName": "Replace Text",
+        "tags": ["replace", "sed"],
+        "modelDescription": "Use this tool to search and replace text across one or more files atomically (like sed). All replacements are batched in a single WorkspaceEdit for full undo/redo support. Safer than terminal sed/awk because it validates before applying. Supports regex patterns and file filtering. Returns JSON with files modified and total replacements. Use this for refactoring text patterns, updating imports, or fixing typos across the codebase.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "searchText": {
+              "type": "string",
+              "description": "Text to search for (supports regex if isRegex=true)"
+            },
+            "replaceText": {
+              "type": "string",
+              "description": "Replacement text"
+            },
+            "filePattern": {
+              "type": "string",
+              "description": "Glob pattern for files to search in (e.g., '**/*.ts')",
+              "default": "**/*"
+            },
+            "isRegex": {
+              "type": "boolean",
+              "description": "Whether searchText is a regex pattern",
+              "default": false
+            },
+            "isCaseSensitive": {
+              "type": "boolean",
+              "description": "Whether search is case-sensitive",
+              "default": false
+            },
+            "maxReplacements": {
+              "type": "number",
+              "description": "Maximum number of replacements to make",
+              "default": 1000
+            }
+          },
+          "required": ["searchText", "replaceText"]
+        }
+      },
+      {
+        "name": "fileaxiom_delete",
+        "displayName": "Delete Files",
+        "tags": ["delete", "remove"],
+        "modelDescription": "Use this tool to safely delete one or more files or directories by moving them to the system trash (recoverable). Safer than 'rm' because files can be recovered. Supports glob patterns to delete multiple files at once. All operations are validated before execution. Returns JSON with success count. Never use terminal 'rm' commands—always use this tool for safe, recoverable deletion.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "description": "Array of file/directory paths or glob patterns to delete",
+              "items": {
+                "type": "string",
+                "description": "File path or glob pattern (e.g., '*.log', 'temp/**')"
+              }
+            }
+          },
+          "required": ["paths"]
+        }
+      },
+      {
+        "name": "fileaxiom_move",
+        "displayName": "Move Files",
+        "tags": ["move", "mv"],
+        "modelDescription": "Moves files while updating imports. Use when user says: move file, relocate file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "operations": {
+              "type": "array",
+              "description": "Array of move operations to perform atomically",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "description": "Source file path (relative to workspace root)"
+                  },
+                  "target": {
+                    "type": "string",
+                    "description": "Target file path (relative to workspace root)"
+                  }
+                },
+                "required": ["source", "target"]
+              }
+            }
+          },
+          "required": ["operations"]
+        }
       }
     ],
     "commands": [
